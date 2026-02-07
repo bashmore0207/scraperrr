@@ -1,0 +1,41 @@
+name: Run Crypto Scrapers
+
+on:
+  # Trigger via API (from Vercel cron)
+  workflow_dispatch:
+
+  # Trigger via schedule (backup - runs daily at midnight UTC)
+  schedule:
+    - cron: '0 0 * * *'
+
+jobs:
+  scrape:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.9'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: |
+          pip install -r tools/requirements.txt
+
+      - name: Run all scrapers
+        env:
+          NEXT_PUBLIC_SUPABASE_URL: ${{ secrets.NEXT_PUBLIC_SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          NEWSDATA_API_KEY: ${{ secrets.NEWSDATA_API_KEY }}
+        run: |
+          python3 tools/run_all_scrapers.py
+
+      - name: Notify on failure
+        if: failure()
+        run: |
+          echo "Scraper run failed at $(date)"
+          # Optional: Add notification logic (Slack, email, etc.)

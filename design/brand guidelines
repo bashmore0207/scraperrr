@@ -1,0 +1,27 @@
+Colors
+Primary:
+#966FE8
+Accent:
+#966FE8
+Background:
+#2A272F
+Text Primary:
+#2A272F
+Link:
+#966FE8
+Fonts
+Circular Std(body)
+Typography
+primary: Circular Std
+heading: Circular Std
+h1: 51.2px
+h2: 47.2px
+body: 18px
+Spacing
+Base Unit:
+8
+Border Radius:
+0px
+Personality
+Tone: modern
+Energy: medium
