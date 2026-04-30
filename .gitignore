@@ -32,6 +32,9 @@ wheels/
 *.tmp
 *.log
 
+# Animation frame captures (source PNGs, outputs are committed)
+frames/
+
 # IDE
 .vscode/
 .idea/

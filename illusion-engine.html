@@ -1,0 +1,436 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>The Illusion Engine</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { background: #060c14; overflow: hidden; }
+  canvas { display: block; }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<script>
+// ── Canvas ─────────────────────────────────────────────────────────────
+const canvas = document.getElementById('c');
+const ctx    = canvas.getContext('2d');
+let W, H;
+function resize() { W = canvas.width = window.innerWidth; H = canvas.height = window.innerHeight; }
+resize();
+window.addEventListener('resize', resize);
+
+// ── Simplex noise 2D ────────────────────────────────────────────────────
+const SN = (() => {
+  const F2 = 0.5 * (Math.sqrt(3) - 1), G2 = (3 - Math.sqrt(3)) / 6;
+  const g2 = [[1,1],[-1,1],[1,-1],[-1,-1],[1,0],[-1,0],[0,1],[0,-1]];
+  const pr = new Uint8Array(256);
+  for (let i = 0; i < 256; i++) pr[i] = i;
+  for (let i = 255; i > 0; i--) { const j = Math.random() * (i+1)|0; [pr[i],pr[j]]=[pr[j],pr[i]]; }
+  const pe = new Uint8Array(512); for (let i=0;i<512;i++) pe[i]=pr[i&255];
+  return {
+    n(x, y) {
+      const s = (x+y)*F2, i = (x+s)|0, j = (y+s)|0, t = (i+j)*G2;
+      const x0=x-(i-t), y0=y-(j-t), i1=+(x0>y0), j1=+(x0<=y0);
+      const x1=x0-i1+G2, y1=y0-j1+G2, x2=x0-1+2*G2, y2=y0-1+2*G2;
+      const gi0=pe[(i&255)+pe[j&255]]%8, gi1=pe[(i+i1&255)+pe[j+j1&255]]%8, gi2=pe[(i+1&255)+pe[j+1&255]]%8;
+      let n=0, t0=0.5-x0*x0-y0*y0; if(t0>0){t0*=t0;n+=t0*t0*(g2[gi0][0]*x0+g2[gi0][1]*y0);}
+      let t1=0.5-x1*x1-y1*y1; if(t1>0){t1*=t1;n+=t1*t1*(g2[gi1][0]*x1+g2[gi1][1]*y1);}
+      let t2=0.5-x2*x2-y2*y2; if(t2>0){t2*=t2;n+=t2*t2*(g2[gi2][0]*x2+g2[gi2][1]*y2);}
+      return 70*n;
+    }
+  };
+})();
+
+// ── Palette — from vague poster: deep navy → pale blue ─────────────────
+// 0=darkest navy, 5=near-white; each as [r,g,b]
+const PAL = [
+  [18,  42,  68],   // 0 deep navy
+  [28,  85, 130],   // 1 ocean blue
+  [52, 138, 185],   // 2 teal-blue
+  [90, 180, 215],   // 3 sky teal
+  [150,215, 238],   // 4 pale blue
+  [210,240, 252],   // 5 near-white
+];
+
+function palRGB(idx, brighten = 0) {
+  const c = PAL[Math.min(Math.max(idx,0), PAL.length-1)];
+  return [Math.min(255,c[0]+brighten), Math.min(255,c[1]+brighten), Math.min(255,c[2]+brighten)];
+}
+
+// ── Spatial grid ────────────────────────────────────────────────────────
+class Grid {
+  constructor(cs) { this.cs = cs; this.m = new Map(); }
+  _k(x,y) { return ((x/this.cs|0)<<16)^(y/this.cs|0); }
+  add(p) { const k=this._k(p.x,p.y); const b=this.m.get(k); b?b.push(p):this.m.set(k,[p]); }
+  near(x,y,r) {
+    const R=Math.ceil(r/this.cs), cx=x/this.cs|0, cy=y/this.cs|0, out=[];
+    for(let dx=-R;dx<=R;dx++) for(let dy=-R;dy<=R;dy++) {
+      const b=this.m.get(((cx+dx)<<16)^(cy+dy)); if(b) for(const p of b) out.push(p);
+    }
+    return out;
+  }
+  clear() { this.m.clear(); }
+}
+const grid = new Grid(64);
+
+// ── Scene definitions ───────────────────────────────────────────────────
+//
+//  Scene 0: The Compounding Engine
+//    Dense murmuration, large navy+blue orbs, tight schooling
+//    → story: harmony, synchronized wealth
+//
+//  Scene 1: Upgrade Potential
+//    Small light particles rising in loose columns
+//    → story: steady ascent, room to grow
+//
+//  Scene 2: The Illusion
+//    Very large dark orbs, initially cohesive and imposing,
+//    then cohesion collapses, they drift and sink
+//    → story: looks impressive, then falls apart
+//
+//  Scene 3: Gone
+//    Tiny pale specks scattered, drifting away, dissolving
+//    → story: nothing left — then rebirth into scene 0
+
+const SDEFS = [
+  // 0 — compounding engine
+  {
+    n:       90,
+    rlo:     7,  rhi: 22,
+    clo:     0,  chi: 2,    // dark → medium blue
+    coh:     0.009,
+    sep:     30,
+    ali:     0.09,
+    ns:      0.00075,       // noise scale
+    nf:      0.35,          // noise force
+    grav:    0.0,
+    attract: (w,h) => ({ x: w*0.5, y: h*0.44, s: 0.00035 }),
+    dur:     9500,
+  },
+  // 1 — upgrade potential
+  {
+    n:       65,
+    rlo:     3,  rhi: 10,
+    clo:     2,  chi: 4,   // teal → pale
+    coh:     0.003,
+    sep:     16,
+    ali:     0.04,
+    ns:      0.0012,
+    nf:      0.55,
+    grav:    -0.022,       // buoyancy
+    attract: (w,h) => ({ x: w*0.5, y: h*0.32, s: 0.00015 }),
+    dur:     8500,
+  },
+  // 2 — the illusion
+  {
+    n:       30,
+    rlo:     20, rhi: 42,
+    clo:     0,  chi: 1,
+    coh:     0.007,
+    sep:     65,
+    ali:     0.025,
+    ns:      0.0006,
+    nf:      0.18,
+    grav:    0.008,
+    attract: (w,h) => ({ x: w*0.5, y: h*0.42, s: 0.0004 }),
+    dur:     11000,
+    breakAt: 5500,         // when cohesion/attract collapses
+  },
+  // 3 — gone
+  {
+    n:       45,
+    rlo:     2,  rhi: 6,
+    clo:     4,  chi: 5,
+    coh:     0.0,
+    sep:     10,
+    ali:     0.0,
+    ns:      0.0018,
+    nf:      1.1,
+    grav:    0.04,
+    attract: null,
+    dur:     5500,
+  },
+];
+
+// ── Particle ─────────────────────────────────────────────────────────────
+let uid = 0;
+function mkP(si, x, y) {
+  const s = SDEFS[si];
+  const r = s.rlo + Math.random() * (s.rhi - s.rlo);
+  const ci = (s.clo + Math.random() * (s.chi - s.clo + 1)) | 0;
+  return {
+    id: uid++,
+    x: x ?? W*(0.1 + Math.random()*0.8),
+    y: y ?? H*(0.1 + Math.random()*0.8),
+    vx: (Math.random()-0.5)*1.2,
+    vy: (Math.random()-0.5)*1.2,
+    r, ci,
+    alpha: 0,
+    si,           // scene index
+    trailPts: [],
+    tTimer: 0,
+    dying: false,
+    cascading: false,
+    cascadeDelay: 0,
+    cascadeDone: false,
+  };
+}
+
+// ── State ─────────────────────────────────────────────────────────────────
+let particles = [];
+let scene = 0;
+let sceneT = 0;
+let inTransition = false;
+let transT = 0;
+const TRANS_DUR = 2800;
+
+function spawnScene(si) {
+  const s = SDEFS[si];
+  for (let i = 0; i < s.n; i++) {
+    // Spawn off-bottom edge, will rise/drift into position
+    const p = mkP(si, W*(0.05+Math.random()*0.9), H + 30 + Math.random()*120);
+    p.vy = -(1 + Math.random() * 1.5); // initial upward push
+    particles.push(p);
+  }
+}
+
+function beginTransition() {
+  inTransition = true;
+  transT = 0;
+  // Stagger cascade by x-position (left→right wave)
+  const toRemove = particles.filter(p => p.si === scene);
+  toRemove.sort((a,b) => a.x - b.x);
+  toRemove.forEach((p, i) => {
+    p.cascading = true;
+    p.cascadeDelay = i * 22 + Math.random() * 80;
+    p.dying = true;
+  });
+}
+
+function advanceScene() {
+  particles = particles.filter(p => !p.dying);
+  scene = (scene + 1) % 4;
+  sceneT = 0;
+  inTransition = false;
+  spawnScene(scene);
+}
+
+// ── Physics ────────────────────────────────────────────────────────────────
+function physics(dt, t) {
+  const ft = dt / 16.667;
+  const s = SDEFS[scene];
+
+  grid.clear();
+  for (const p of particles) { if (p.alpha > 0.05 && !p.dying) grid.add(p); }
+
+  for (const p of particles) {
+    if (p.cascading) {
+      p.cascadeDelay -= dt;
+      if (p.cascadeDelay > 0) continue;
+      // Fall downward in cascade wave
+      p.vy += 0.18 * ft;
+      p.vx += SN.n(p.x*0.004, p.y*0.004 + t*0.0001) * 0.08 * ft;
+      p.alpha = Math.max(0, p.alpha - 0.012 * ft);
+      p.vx *= Math.pow(0.98, ft);
+      p.vy = Math.min(p.vy, 14);
+      p.x += p.vx * ft;
+      p.y += p.vy * ft;
+      continue;
+    }
+
+    if (p.si !== scene && !p.dying) { p.alpha = Math.max(0, p.alpha - 0.02*ft); continue; }
+
+    // Fade in
+    p.alpha = Math.min(1, p.alpha + 0.018 * ft);
+
+    // Noise field (2-layer curl-ish)
+    const ts = t * 0.00007;
+    const nx = SN.n(p.x * s.ns,        p.y * s.ns + ts) * s.nf;
+    const ny = SN.n(p.x * s.ns + 47.3, p.y * s.ns - ts) * s.nf;
+    p.vx += nx * 0.05 * ft;
+    p.vy += ny * 0.05 * ft;
+
+    // Gravity
+    p.vy += s.grav * ft;
+
+    // Scene attractor (collapse for illusion scene after breakAt)
+    if (s.attract) {
+      let str = s.attract(W,H).s;
+      if (s.breakAt) {
+        const fade = Math.max(0, 1 - Math.max(0, sceneT - s.breakAt) / 3500);
+        str *= fade;
+        // Add outward scatter force after break
+        if (sceneT > s.breakAt) {
+          const scatter = Math.min(1, (sceneT - s.breakAt) / 2500);
+          const cx = W*0.5, cy = H*0.5;
+          const dx = p.x - cx, dy = p.y - cy;
+          const d = Math.sqrt(dx*dx+dy*dy)+1;
+          p.vx += (dx/d) * 0.06 * scatter * ft;
+          p.vy += (dy/d) * 0.06 * scatter * ft;
+          // Also extra gravity after break
+          p.vy += 0.025 * scatter * ft;
+        }
+      }
+      const att = s.attract(W,H);
+      p.vx += (att.x - p.x) * str * ft;
+      p.vy += (att.y - p.y) * str * ft;
+    }
+
+    // Boids
+    const nbrs = grid.near(p.x, p.y, 80);
+    let sx=0, sy=0, avgVx=0, avgVy=0, comX=0, comY=0, cnt=0;
+
+    for (const n of nbrs) {
+      if (n===p) continue;
+      const dx=p.x-n.x, dy=p.y-n.y;
+      const d2=dx*dx+dy*dy, d=Math.sqrt(d2)||0.001;
+      const minD = s.sep + p.r*0.5 + n.r*0.5;
+      if (d < minD) {
+        const f = (minD-d)/minD;
+        sx += (dx/d)*f*0.18; sy += (dy/d)*f*0.18;
+      }
+      if (d < 85) { avgVx+=n.vx; avgVy+=n.vy; comX+=n.x; comY+=n.y; cnt++; }
+    }
+
+    p.vx += sx * ft; p.vy += sy * ft;
+
+    if (cnt > 0) {
+      p.vx += (avgVx/cnt - p.vx) * s.ali * ft;
+      p.vy += (avgVy/cnt - p.vy) * s.ali * ft;
+      // Cohesion — suppressed after illusion break
+      let cohMul = 1;
+      if (s.breakAt && sceneT > s.breakAt) cohMul = Math.max(0, 1-(sceneT-s.breakAt)/3000);
+      p.vx += ((comX/cnt)-p.x) * s.coh * cohMul * ft;
+      p.vy += ((comY/cnt)-p.y) * s.coh * cohMul * ft;
+    }
+
+    // Speed cap
+    const spd = Math.sqrt(p.vx*p.vx+p.vy*p.vy);
+    const maxSpd = 4.5;
+    if (spd > maxSpd) { p.vx *= maxSpd/spd; p.vy *= maxSpd/spd; }
+
+    // Damping
+    p.vx *= Math.pow(0.968, ft);
+    p.vy *= Math.pow(0.968, ft);
+
+    p.x += p.vx * ft;
+    p.y += p.vy * ft;
+
+    // Soft boundary
+    const mg = 55;
+    if (p.x < mg)   p.vx += 0.35 * ft;
+    if (p.x > W-mg) p.vx -= 0.35 * ft;
+    if (p.y < mg)   p.vy += 0.35 * ft;
+    if (p.y > H-mg) p.vy -= 0.35 * ft;
+
+    // Trail for illusion scene after break
+    if (scene===2 && s.breakAt && sceneT > s.breakAt) {
+      p.tTimer += dt;
+      if (p.tTimer > 95) {
+        p.trailPts.push({x:p.x,y:p.y});
+        if (p.trailPts.length > 16) p.trailPts.shift();
+        p.tTimer=0;
+      }
+    } else {
+      if (p.trailPts.length) p.trailPts = [];
+    }
+  }
+
+  // Prune off-screen dying particles
+  particles = particles.filter(p => !(p.dying && (p.alpha<=0 || p.y > H+200)));
+}
+
+// ── Draw ───────────────────────────────────────────────────────────────────
+function drawP(p) {
+  const { x, y, r, ci, alpha } = p;
+  if (alpha < 0.01) return;
+  const [cr,cg,cb] = palRGB(ci);
+  const [hr,hg,hb] = palRGB(ci, 55); // highlight
+
+  ctx.save();
+  ctx.globalAlpha = alpha;
+
+  // Outer glow — larger for big particles
+  const gR = r * (scene===2 && sceneT < (SDEFS[2].breakAt||9e9) ? 3.2 : 2.4);
+  const g0 = ctx.createRadialGradient(x,y,r*0.4,x,y,gR);
+  g0.addColorStop(0, `rgba(${cr},${cg},${cb},0.10)`);
+  g0.addColorStop(1, `rgba(${cr},${cg},${cb},0)`);
+  ctx.fillStyle = g0;
+  ctx.beginPath(); ctx.arc(x,y,gR,0,Math.PI*2); ctx.fill();
+
+  // Core sphere
+  const g1 = ctx.createRadialGradient(x-r*0.32,y-r*0.32,r*0.06,x,y,r);
+  g1.addColorStop(0, `rgba(${hr},${hg},${hb},1)`);
+  g1.addColorStop(0.55, `rgba(${cr},${cg},${cb},1)`);
+  g1.addColorStop(1,    `rgba(${Math.max(0,cr-35)},${Math.max(0,cg-35)},${Math.max(0,cb-35)},0.85)`);
+  ctx.fillStyle = g1;
+  ctx.beginPath(); ctx.arc(x,y,r,0,Math.PI*2); ctx.fill();
+
+  // Specular
+  const sa = Math.min(0.45, alpha * 0.45);
+  ctx.globalAlpha = sa;
+  ctx.fillStyle = 'rgba(255,255,255,1)';
+  ctx.beginPath(); ctx.arc(x-r*0.29,y-r*0.29,r*0.27,0,Math.PI*2); ctx.fill();
+
+  ctx.restore();
+}
+
+function drawTrail(p) {
+  const pts = p.trailPts;
+  if (pts.length < 2) return;
+  const [cr,cg,cb] = palRGB(p.ci);
+  ctx.save(); ctx.lineCap='round';
+  for (let i=1;i<pts.length;i++) {
+    const frac = i/pts.length;
+    ctx.globalAlpha = frac * p.alpha * 0.25;
+    ctx.strokeStyle = `rgb(${cr},${cg},${cb})`;
+    ctx.lineWidth = p.r * 0.35 * frac;
+    ctx.beginPath(); ctx.moveTo(pts[i-1].x,pts[i-1].y); ctx.lineTo(pts[i].x,pts[i].y); ctx.stroke();
+  }
+  ctx.restore();
+}
+
+// ── Main loop ──────────────────────────────────────────────────────────────
+let lastT=0;
+function frame(t) {
+  const dt = Math.min(t - lastT, 50); lastT = t;
+
+  // Scene timer & transition trigger
+  if (!inTransition) {
+    sceneT += dt;
+    if (sceneT > SDEFS[scene].dur) beginTransition();
+  } else {
+    transT += dt;
+    sceneT += dt;
+    if (transT > TRANS_DUR) advanceScene();
+  }
+
+  physics(dt, t);
+
+  // Motion-blur clear — retains 88% of previous frame = natural water trails
+  ctx.fillStyle = 'rgba(6,12,20,0.12)';
+  ctx.fillRect(0, 0, W, H);
+
+  // Trails then particles
+  for (const p of particles) drawTrail(p);
+  for (const p of particles) drawP(p);
+
+  requestAnimationFrame(frame);
+}
+
+// ── Bootstrap ──────────────────────────────────────────────────────────────
+// Pre-populate scene 0 spread across screen so it doesn't look empty at start
+const s0 = SDEFS[0];
+for (let i = 0; i < s0.n; i++) {
+  const p = mkP(0);
+  p.x = W * (0.15 + Math.random() * 0.7);
+  p.y = H * (0.15 + Math.random() * 0.7);
+  p.alpha = 0.4 + Math.random() * 0.6;
+  particles.push(p);
+}
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>
